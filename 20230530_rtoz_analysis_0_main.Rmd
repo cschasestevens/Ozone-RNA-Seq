@@ -1,0 +1,610 @@
+---
+title: "20230530_rtoz_analysis_0_main"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: TRUE
+    toc_depth: 2
+    theme: cerulean
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F,
+                      message = F,
+                      dpi = 500,
+                      fig.width = 7)
+```
+
+# Data Analysis Report for **Rat Ozone Transcriptomics**
+
+## **Contents:**
+
+### - Load libraries and themes
+
+All plot themes and packages included for data filtering, statistical analysis, visualization, and enrichment analysis.
+
+### - Data import (.xlsx file)
+
+Compatible with .xlsx files only! Loads data into global environment and transposes columns and rows (Excel not compatible with long-format data). Data contains metadata information and individual transcripts with counts per million reads. Filters out low abundance transcripts using filterbyExp() function from edgeR package.
+
+**Additional Notes:** Pre-processing performed by UC Davis Bioinformatics Core including library prep, analysis, etc.
+
+### - Data transformation and quality check
+
+Performs log transformation to filtered transcript data (enables parametric statistical tests on roughly normal distribution). Checks sample sizes within each group and visualizes data distribution with and without log transformation.
+
+### - Statistical analysis
+
+#### - Unique Features
+
+Selects features that are only present in the selected groups of samples. Can be modified to accommodate specific combinations of samples.
+
+#### - Multivariate analysis (PCA, spatially-aware shrunken centroids) [per sample]
+
+Conducts PCA and spatially-aware shrunken centroids on all samples. This is performed on a per sample basis prior to raster area normalization. Mostly used to find individual features that distinguish each region.
+
+#### - Univariate statistics
+
+Conducts one-way ANOVA for selected comparisons using the log2 pixel intensities for each group. The resulting p-values are not FDR corrected.
+
+#### - Significant/NS heatmap
+
+Creates a heat map displaying the significant features between each comparison. Used as a general indicator of the most affected treatment groups.
+
+#### - Univariate analysis summary [volcano plots]
+
+Constructs volcano plots of selected comparisons to summarize univariate changes.
+
+#### - Gene Ontology (GO) enrichment analysis
+
+Determines whether functionally related genes are altered in expression between a specific comparison. Uses gene sets from the GO database.
+
+
+### **Important notes for all:**
+
+#### - It is possible to run select portions of the script without running others. Simply set **"eval ="** to **"F"** to skip this portion of the script. This argument appears on the first line of each code chunk inside the brackets **"{r...}"** .
+
+
+## **Load Libraries and Input Data**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+source("1_rtoz_analysis_1_lib_dataimport.R",
+       local = knitr::knit_global()
+       )
+  
+  
+```
+
+## **Data Transformation and Quality Check**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+source("1_rtoz_analysis_2_dt_dist.R",
+       local = knitr::knit_global()
+       )
+
+# Distribution (without log transformation)
+
+dst(data.input,
+    7,
+    "20230530_data_dist_norm.png")
+
+# Distribution (log transformed)
+
+dst(data.log,
+    8,
+    "20230530_data_dist_log2.png")
+
+# Save log transformed data set
+
+write.xlsx(data.log,
+           "20230530_rtoz_log2 norm counts.xlsx",
+           row.names= T)
+
+# Count sample size per group
+
+grps <- data.log %>% 
+  dplyr::select(`Group`)
+
+group_sum <- grps %>% 
+  dplyr::count(`Group`)
+
+names(group_sum) <- c("Group", 
+                      "Number")
+
+group_sum %>% 
+  kbl() %>%
+  kable_minimal(full_width=F,
+                font_size=12,
+                html_font = "Arial")
+
+# Remove NAs and inf. values
+
+data.log[,8:ncol(data.log)] <- fortify(data.log[,8:ncol(data.log)]) %>% 
+  mutate_all(function(x) ifelse(is.infinite(x), 
+                                0, 
+                                x))
+
+# Test for missing or infinite values
+
+na.inf <- apply(data.log,
+                2,
+                function (x) any(is.na(x)) |
+                  any(is.infinite(x)
+                      )
+                ) %>%
+  as.data.frame()
+
+na.inf[which(na.inf[,1] == TRUE),]
+
+  
+```
+
+## **Groupwise Fold Changes**
+
+```{r, echo=FALSE, results=F, message=F, warning=F}
+
+plot.date <- "20230531"
+
+# Calculate log2 fold change
+
+source("1_rtoz_analysis_2_fc_calc.R",
+       local = knitr::knit_global()
+       )
+
+# Export result
+
+fc.export(paste(plot.date,
+                "_fc_log2.xlsx",
+                sep = ""))
+
+```
+
+
+## **PLS-DA and Cross-validation for All Samples (Figure 1 and Figure S2)**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+source("1_rtoz_analysis_3_multivariate_1.R",
+       local = knitr::knit_global()
+       )
+
+  
+```
+
+## **TW ANOVA for Validation of Sex Stratification (Table S1)**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Two-way ANOVA Function
+
+source("1_rtoz_analysis_3_multivariate_2.R",
+       local = knitr::knit_global()
+       )
+
+# Format data, run test, and save results
+
+tw.output.fun <- function(df,
+                          md,
+                          md1,
+                          v1,
+                          v2,
+                          int1) {
+  # Run TW-ANOVA
+  
+  tw_ano(df,md,md1,
+         v1,v2,int1)
+
+  # Select only transcripts with Q-values < 0.05
+
+  d_tw4.sig <- d_tw4 %>% 
+    select_if(~ any(. <= 0.05))
+
+  
+  ####START HERE
+  d_tw4.fdr.sig <<- d_tw4.fdr %>% 
+    filter(d_tw4.fdr[,v1] <= 0.05 |
+             d_tw4.fdr[,int1] <= 0.05)
+
+  # Save Results as Excel File
+
+  tw.export <- tw.export1(paste(plot.date,
+                    "_tw_",
+                    v1,
+                    "_",
+                    v2,
+                    ".xlsx",
+                    sep = ""))
+
+  return(tw.export)
+
+  }
+
+tw.output.fun(data.log,
+              7,
+              8,
+              "sex",
+              "location",
+              "sex:location")
+
+# Repeat for other comparisons
+
+
+
+
+```
+
+
+## **Univariate Statistical Analysis (Table 1)**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Code for OW-ANOVA
+
+source("1_rtoz_analysis_4_univariate_1.R",
+       local = knitr::knit_global()
+       )
+
+# Female
+
+ow_f <- ow_ano(data.log, 
+               "F", 
+               7, 
+               8)
+
+ow.f.sig <- d_ow.fdr.sig
+
+write.xlsx(ow_f, 
+           paste(plot.date,
+                 "_ow_female.xlsx",
+                 sep = ""), 
+           row.names= T)
+
+# Male
+
+ow_m <- ow_ano(data.log, 
+               "M", 
+               7, 
+               8)
+
+ow.m.sig <- d_ow.fdr.sig
+
+write.xlsx(ow_m, 
+           paste(plot.date,
+                 "_ow_male.xlsx",
+                 sep = ""), 
+           row.names= T)
+
+# Export combined male and female results
+
+ow.sig.comb <- cbind(ow.f.sig,
+                     ow.m.sig)
+
+names(ow.sig.comb) <- c("Female",
+                     "Male")
+
+write.xlsx(ow.sig.comb,
+           paste(plot.date,
+                 "_ow_combined_sig.xlsx",
+                 sep = ""),
+           row.names = T)
+
+  
+```
+
+## **Gene Names and Input for Heatmaps/Volcano Plots**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+source("1_rtoz_analysis_5_plot_input.R",
+       local = knitr::knit_global()
+       )
+
+  
+```
+
+## **Heatmaps for:**
+### **Female Distal vs. Parenchyma; both exposures and ages (Figure 2)**
+### **Male Distal vs. Parenchyma; both exposures and ages (Figure S3)**
+
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Heatmap input columns
+
+## Female (Figure 2)
+
+heat.female <- c("F 4 weeks Parenchyma Filtered Air-F 4 weeks Distal Filtered Air",
+                 "F 4 weeks Parenchyma Ozone-F 4 weeks Distal Ozone",
+                 "F 12 weeks Parenchyma Filtered Air-F 12 weeks Distal Filtered Air",
+                 "F 12 weeks Parenchyma Ozone-F 12 weeks Distal Ozone",
+                 "F 4 weeks Distal Filtered Air-F 4 weeks Parenchyma Filtered Air.fc",
+                 "F 4 weeks Distal Ozone-F 4 weeks Parenchyma Ozone.fc",
+                 "F 12 weeks Distal Filtered Air-F 12 weeks Parenchyma Filtered Air.fc",
+                 "F 12 weeks Distal Ozone-F 12 weeks Parenchyma Ozone.fc")
+
+heat.female.abb <- c("name",
+                     "F04DPFA",
+                     "F04DPOZ",
+                     "F12DPFA",
+                     "F12DPOZ")
+
+## Male (Figure S3)
+
+heat.male <- c("M 4 weeks Parenchyma Filtered Air-M 4 weeks Distal Filtered Air",
+                 "M 4 weeks Parenchyma Ozone-M 4 weeks Distal Ozone",
+                 "M 12 weeks Parenchyma Filtered Air-M 12 weeks Distal Filtered Air",
+                 "M 12 weeks Parenchyma Ozone-M 12 weeks Distal Ozone",
+                 "M 4 weeks Distal Filtered Air-M 4 weeks Parenchyma Filtered Air.fc",
+                 "M 4 weeks Distal Ozone-M 4 weeks Parenchyma Ozone.fc",
+                 "M 12 weeks Distal Filtered Air-M 12 weeks Parenchyma Filtered Air.fc",
+                 "M 12 weeks Distal Ozone-M 12 weeks Parenchyma Ozone.fc")
+
+heat.male.abb <- c("name",
+                   "M04DPFA",
+                   "M04DPOZ",
+                   "M12DPFA",
+                   "M12DPOZ")
+
+# Heatmap function
+
+source("1_rtoz_analysis_5_plot_heatmap.R",
+       local = knitr::knit_global()
+       )
+
+# Run function for both male and female
+
+h1.fun(heat.female.input)
+
+png(paste(plot.date,
+          "_htm_fig2.png",
+          sep = ""), 
+    width = 40, 
+    height = 15,
+    res = 700, 
+    units = 'cm')
+
+h1_p
+
+dev.off()
+
+write.xlsx(heat.female.input,
+           paste(plot.date,
+          "_htm_fig2_tab.xlsx",
+          sep = ""),
+           overwrite = T)
+
+
+
+h1.fun(heat.male.input)
+
+png(paste(plot.date,
+          "_htm_figS3.png",
+          sep = ""), 
+    width = 40, 
+    height = 15,
+    res = 700, 
+    units = 'cm')
+
+h1_p
+
+dev.off()
+
+write.xlsx(heat.male.input,
+           paste(plot.date,
+          "_htm_figS3_tab.xlsx",
+          sep = ""),
+           overwrite = T)
+
+  
+```
+
+
+## **Volcano Plots for:**
+### **Female 4 weeks vs. 8 weeks ozone Parenchyma (Figure 3)**
+### **Female Distal vs. Parenchyma 4 weeks FA [A] AND Ozone [B] (Figure S4)** 
+### **Male Distal vs. Parenchyma 4 weeks FA [A] AND Ozone [B] (Figure S5)** 
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Volcano plot input function
+
+source("1_rtoz_analysis_5_plot_volcano.R",
+       local = knitr::knit_global()
+       )
+
+
+# Female 4 weeks vs. 8 weeks ozone Parenchyma (Figure 3)
+
+## Change fold change direction
+
+plot.input.combined$`F 4 weeks Parenchyma Filtered Air-F 4 weeks Parenchyma Ozone.fc` <- log2(1/(2^(plot.input.combined$`F 4 weeks Parenchyma Filtered Air-F 4 weeks Parenchyma Ozone.fc`)))
+
+generate_vol(plot.input.combined,
+             "F 4 weeks Parenchyma Filtered Air-F 4 weeks Parenchyma Ozone.fc", 
+             "F 4 weeks Parenchyma Ozone-F 4 weeks Parenchyma Filtered Air",
+             "Female 4wks. Parenchyma - Ozone vs. Control", 
+             paste(plot.date,
+                   "_vol_fig3.png",
+                   sep = ""))
+
+# Female Distal vs. Parenchyma 4 weeks FA [A] AND Ozone [B] (Figure S3)
+
+generate_vol(plot.input.combined,
+             "F 4 weeks Distal Filtered Air-F 4 weeks Parenchyma Filtered Air.fc", 
+             "F 4 weeks Parenchyma Filtered Air-F 4 weeks Distal Filtered Air",
+             "Female 4wks. Filtered Air - Distal vs. Parenchyma", 
+             paste(plot.date,
+                   "_vol_figS3A.png",
+                   sep = ""))
+
+generate_vol(plot.input.combined,
+             "F 4 weeks Distal Ozone-F 4 weeks Parenchyma Ozone.fc", 
+             "F 4 weeks Parenchyma Ozone-F 4 weeks Distal Ozone",
+             "Female 4wks. Ozone - Distal vs. Parenchyma", 
+             paste(plot.date,
+                   "_vol_figS3B.png",
+                   sep = ""))
+
+# Male Distal vs. Parenchyma 4 weeks FA [A] AND Ozone [B] (Figure S4)
+
+generate_vol(plot.input.combined,
+             "M 4 weeks Distal Filtered Air-M 4 weeks Parenchyma Filtered Air.fc", 
+             "M 4 weeks Parenchyma Filtered Air-M 4 weeks Distal Filtered Air",
+             "Male 4wks. Filtered Air - Distal vs. Parenchyma", 
+             paste(plot.date,
+                   "_vol_figS4A.png",
+                   sep = ""))
+
+generate_vol(plot.input.combined,
+             "M 4 weeks Distal Ozone-M 4 weeks Parenchyma Ozone.fc", 
+             "M 4 weeks Parenchyma Ozone-M 4 weeks Distal Ozone",
+             "Male 4wks. Ozone - Distal vs. Parenchyma", 
+             paste(plot.date,
+                   "_vol_figS4B.png",
+                   sep = ""))
+
+  
+```
+
+
+## **TW ANOVA for testing interaction between exposure and location at 4 weeks in females (Figure 4)**
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Two-way ANOVA Function
+
+source("1_rtoz_analysis_3_multivariate_3.R",
+       local = knitr::knit_global()
+       )
+
+# Format data, run test, and save results
+
+tw.output.fun <- function(df,
+                          md,
+                          md1,
+                          v1,
+                          v2,
+                          int1) {
+  # Run TW-ANOVA
+  
+  tw_ano(df,md,md1,
+         v1,v2,int1)
+
+  # Select only transcripts with Q-values < 0.05
+
+  d_tw4.sig <- d_tw4 %>% 
+    select_if(~ any(. <= 0.05))
+
+    d_tw4.fdr.sig <<- d_tw4.fdr %>% 
+    filter(d_tw4.fdr[,v1] <= 0.05 |
+             d_tw4.fdr[,int1] <= 0.05)
+
+  # Save Results as Excel File
+
+  tw.export <- tw.export1(paste(plot.date,
+                    "_tw_",
+                    v1,
+                    "_",
+                    v2,
+                    ".xlsx",
+                    sep = ""))
+
+  return(tw.export)
+
+  }
+
+tw.exloc.female <- data.log %>%
+  filter(sex == "F" &
+           age == "4 weeks")
+
+tw.output.fun(tw.exloc.female,
+              7,
+              8,
+              "exposure",
+              "location",
+              "exposure:location")
+
+
+
+
+```
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# Box plot to visualize TW-ANOVA results
+
+source("1_rtoz_analysis_5_plot_barplot.R",
+       local = knitr::knit_global())
+
+  
+```
+
+
+## **GO Enrichment Analysis and Circular Packing Plots for Enriched Gene Sets [Female 4 wks. parenchyma ozone vs. filtered air (Figure 5), Female 4 wks. distal vs. parenchyma ozone AND filtered air (Figure S5)]
+
+```{r, echo=T, fig.align= "center", results=T, message=T, warning=T, eval=T}
+
+# GO Enrichment Function
+
+source("1_rtoz_analysis_6_go_enrichment_1.R",
+       local = knitr::knit_global())
+
+# Run for selected comparisons
+
+## Female 4 weeks parenchyma ozone vs. filtered air
+
+GO.enrich(c("ID",
+            "F 4 weeks Parenchyma Filtered Air-F 4 weeks Parenchyma Ozone.fc", 
+            "F 4 weeks Parenchyma Ozone-F 4 weeks Parenchyma Filtered Air"),
+          "Female 4wks. Parenchyma - Ozone vs. Control",
+          paste(plot.date,
+                "_go_F04POZ_terms.xlsx",
+                sep = ""),
+          paste(plot.date,
+                "_go_F04POZ_genes.xlsx",
+                sep = ""))
+
+# Circular Packing Maps
+
+source("1_rtoz_analysis_6_go_enrichment_2.R",
+       local = knitr::knit_global())
+
+# Run for Selected Comparisons
+
+circular.packing("9_archive/9_go_enrichment/9_go terms_female 4wks pa oz v fa_edited.xlsx",
+                 "9_archive/9_go_enrichment/9_ind genes_female 4 wks pa oz v fa.xlsx",
+                 paste(plot.date,
+                "_go_F04POZ_cpm_edge_noname.xlsx",
+                sep = ""),
+                 paste(plot.date,
+                "_go_F04POZ_cpm_plot_noname.png",
+                sep = ""))
+
+circular.packing("9_archive/9_go_enrichment/9_go terms_female 4wks fa dis v pa_edited.xlsx",
+                 "9_archive/9_go_enrichment/9_ind genes_female 4 wks fa dis v pa.xlsx",
+                 paste(plot.date,
+                "_go_F04DPFA_cpm_edge_noname.xlsx",
+                sep = ""),
+                 paste(plot.date,
+                "_go_F04DPFA_cpm_plot_noname.png",
+                sep = ""))
+
+circular.packing("9_archive/9_go_enrichment/9_go terms_female 4wks oz dis v pa_edited.xlsx",
+                 "9_archive/9_go_enrichment/9_ind genes_female 4 wks oz dis v pa.xlsx",
+                 paste(plot.date,
+                "_go_F04DPOZ_cpm_edge_noname.xlsx",
+                sep = ""),
+                 paste(plot.date,
+                "_go_F04DPOZ_cpm_plot_noname.png",
+                sep = ""))
+
+  
+```
+
+
+
+
+
